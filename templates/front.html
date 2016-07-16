@@ -5,6 +5,11 @@
   {% for p in posts %}
     {{ p.render() | safe }}
     <br><br>
+
+    <div class="like-count">
+        {{ like_num_post_dict[p.key.integer_id()] }}
+    </div>
+
   {% endfor %}
 
 {% endblock %}

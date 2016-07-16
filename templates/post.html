@@ -1,17 +1,23 @@
 <div class="post">
-  <div class="post-heading">
-    <a href={{"/blog/" ~ p.key.integer_id()}}>
-      <div class="post-title">
-        {{p.subject}}
-      </div>
-    </a>
+    <div class="post-heading">
+        <a href={{"/blog/" ~ p.key.integer_id()}}>
+            <div class="post-title">
+                {{p.subject}}
+            </div>
+        </a>
 
-    <div class="post-date">
-      {{p.created.strftime("%b %d, %Y")}}
+        <div class="post-date">
+            {{p.created.strftime("%b %d, %Y")}}
+        </div>
     </div>
-  </div>
 
-  <div class="post-content">
-    {{p._render_text | safe}}
-  </div>
+    <div class="post-content">
+        {{p._render_text | safe}}
+    </div>
+
+    <form method="post" action={{"/blog/likepost/" ~ p.key.integer_id()}} >
+        <button>Like</button>
+    </form>
+
+
 </div>

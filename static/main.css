@@ -75,5 +75,17 @@ textarea {
 
 .post-content {
     margin-top: 5px;
+    margin-bottom: 10px;
 }
 
+.right {
+    float: right;
+}
+
+.left {
+    margin-right: auto;
+}
+
+.comment-date {
+    margin-bottom: 0;
+}

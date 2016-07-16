@@ -1,0 +1,9 @@
+<div class="comment">
+    <div class="comment-content left">
+        {{c._render_text | safe}}
+    </div>
+
+    <div class="comment-date right">
+        {{c.created.strftime("%b %d, %Y")}}
+    </div>
+</div>

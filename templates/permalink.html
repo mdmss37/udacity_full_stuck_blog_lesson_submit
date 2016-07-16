@@ -3,13 +3,41 @@
 {% block content %}
   {{post.render() | safe}}
 
-<form action="{{"/blog/edit/" ~ post.key.integer_id()}}" class="">
+<form action={{"/blog/edit/" ~ post.key.integer_id()}} class="">
     <button>Edit Post</button>
 </form>
 
 <form action="/deletepost" method="post" class="">
-    <input type="hidden" name="post_id" value="{{post.key.integer_id()}}">
+    <input type="hidden" name="post_id" value={{post.key.integer_id()}}>
     <button>Delete Post</button>
+</form>
+
+<div>
+    <p>Comments</p>
+</div>
+
+{% if comments %}
+    {% for c in comments %}
+        <hr class="comment-horizontal-line">
+        {{ c.render() | safe }}
+        <br>
+        <form action={{"/deletepost/" ~ c.key.integer_id()}} method="post" class="right">
+            <input type="hidden" name="comment_id" value={{c.key.integer_id()}}>
+            <button>Delete Comment</button>
+        </form>
+        <br>
+        <hr class="comment-horizontal-line">
+    {% endfor %}
+{% endif %}
+
+<form method="post" action={{"/blog/newcomment/" ~ post.key.integer_id()}} >
+    <label>
+        <div>Post Comment</div>
+        <textarea name="comment-content"></textarea>
+    </label>
+
+    <div class="error">{{error}}</div>
+    <button>Comment</button>
 </form>
 
 {% endblock %}

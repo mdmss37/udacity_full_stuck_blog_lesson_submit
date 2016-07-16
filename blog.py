@@ -15,13 +15,12 @@
 import webapp2
 import os
 import jinja2
-import cgi
-import codecs
 import re
 import hashlib
 import hmac
 import string
 import random
+import logging
 
 from google.appengine.ext import ndb
 
@@ -43,6 +42,56 @@ def check_secure_val(h):
     val = h.split("|")[0]
     if h == make_secure_val(val):
         return val
+
+
+def render_str(template, **params):
+
+    t = jinja_env.get_template(template)
+    return t.render(params)
+
+
+def blog_key(name="default"):
+    return ndb.Key("blogs", name)
+
+
+USER_RE = re.compile(r"^[a-zA-Z0-9_-]{3,20}$")
+
+
+def valid_username(username):
+    return username and USER_RE.match(username)
+
+PASS_RE = re.compile(r"^.{3,20}$")
+
+
+def valid_password(password):
+    return password and PASS_RE.match(password)
+
+
+MAIL_RE = re.compile(r"^[\S]+@[\S]+.[\S]+$")
+
+
+def valid_email(email):
+    return not email or MAIL_RE.match(email)
+
+
+def make_salt(length=5):
+    return "".join(random.choice(string.letters) for x in xrange(0, length))
+
+
+def make_pw_hash(name, pw, salt=None):
+    if not salt:
+        salt = make_salt()
+    h = hashlib.sha256(name + pw + salt).hexdigest()
+    return "{}|{}".format(salt, h)
+
+
+def valid_pw(name, pw, h):
+    salt = h.split("|")[0]
+    return h == make_pw_hash(name, pw, salt)
+
+
+def users_key(group="default"):
+    return ndb.Key("users", group)
 
 
 class Handler(webapp2.RequestHandler):
@@ -77,20 +126,62 @@ class Handler(webapp2.RequestHandler):
         uid = self.read_secure_cookie("user_id")
         self.user = uid and User.by_id(int(uid))
 
-# blog stuff
+
+class User(ndb.Model):
+
+    """
+    This is ndb model to store user.
+    """
+    name = ndb.StringProperty(required=True)
+    pw_hash = ndb.StringProperty(required=True)
+    email = ndb.StringProperty()
+
+    @classmethod
+    def by_id(cls, uid):
+        return User.get_by_id(uid, parent=users_key())
+
+    @classmethod
+    def by_name(cls, name):
+        u = User.query().filter(User.name == name).get()
+        print(type(u))
+        return u
+
+    @classmethod
+    def register(cls, name, pw, email=None):
+        pw_hash = make_pw_hash(name, pw)
+        return User(parent=users_key(),
+                    name=name,
+                    pw_hash=pw_hash,
+                    email=email)
+
+    @classmethod
+    def login(cls, name, pw):
+        u = cls.by_name(name)
+        if u and valid_pw(name, pw, u.pw_hash):
+            return u
 
 
-def render_str(template, **params):
+class Comment(ndb.Model):
 
-    t = jinja_env.get_template(template)
-    return t.render(params)
+    """
+    This is ndb model to store comment.
+    """
+    post_id_comment_belongs = ndb.IntegerProperty(required=True)
+    comment_content = ndb.TextProperty(required=True)
+    created = ndb.DateTimeProperty(auto_now_add=True)
+    commenter_id = ndb.IntegerProperty(required=True)
+    last_modified = ndb.DateTimeProperty(auto_now=True)
 
-
-def blog_key(name="default"):
-    return ndb.Key("blogs", name)
+    def render(self):
+        self._render_text = self.comment_content.replace("\n", "<br>")
+        return render_str("comment.html", c=self)
 
 
 class Post(ndb.Model):
+
+    """
+    This is ndb model to store post.
+    """
     subject = ndb.StringProperty(required=True)
     content = ndb.TextProperty(required=True)
     created = ndb.DateTimeProperty(auto_now_add=True)
@@ -102,6 +193,49 @@ class Post(ndb.Model):
         return render_str("post.html", p=self)
 
 
+class LikeForPost(ndb.Model):
+
+    """
+    This is ndb model to store like for each post.
+    """
+    number_of_post_liked = ndb.IntegerProperty(required=True)
+    post_id_like_belongs = ndb.IntegerProperty(required=True)
+    liked_user_id_list = ndb.IntegerProperty(repeated=True)
+    last_modified = ndb.DateTimeProperty(auto_now=True)
+
+
+class LikeToPost(Handler):
+
+    def post(self, post_id):
+        posts = Post.query().order(-Post.created)
+        posts = posts.fetch(10)
+
+        uid = self.read_secure_cookie("user_id")
+        user = uid and User.by_id(int(uid))
+
+        key = ndb.Key("Post", int(post_id), parent=blog_key())
+        post = key.get()
+
+        like_for_post = LikeForPost.query(post_id_like_belongs == int(uid))
+
+        if user:
+            if like_for_post and not(int(uid) in like_for_post.liked_user_id_list):
+                like_for_post.number_of_post_liked += 1
+                like_for_post.liked_user_id_list.append(int(uid))
+                like_for_post.put()
+                self.redirect("/blog")
+
+            elif like_for_post and (int(uid) in like_for_post.liked_user_id_list):
+                self.redirect("/blog")
+            else:
+                l = LikeForPost(number_of_post_liked=1,
+                                post_id_like_belongs=int(post_id),
+                                liked_user_id_list=int(uid))
+                l.put()
+                self.redirect("blog")
+        else:
+            self.redirect("blog")
+
 class BlogFront(Handler):
 
     def get(self):
@@ -111,12 +245,18 @@ class BlogFront(Handler):
         uid = self.read_secure_cookie("user_id")
         user = uid and User.by_id(int(uid))
 
+        like_for_post = LikeForPost().query()
+        like_num_post_dict = {}
+
+        for like in like_for_post:
+            like_num_post_dict[like.post_id_like_belongs] = like.number_of_post_liked
+
         if user:
             username = user.name
         else:
             username = ""
 
-        self.render("front.html", username=username, posts=posts)
+        self.render("front.html", username=username, posts=posts, like_num_post_dict=like_num_post_dict)
 
 
 class PostPage(Handler):
@@ -124,6 +264,8 @@ class PostPage(Handler):
     def get(self, post_id):
         key = ndb.Key("Post", int(post_id), parent=blog_key())
         post = key.get()
+        comments = Comment.query(
+            Comment.post_id_comment_belongs == int(post_id))
 
         if not post:
             self.error(404)
@@ -131,44 +273,16 @@ class PostPage(Handler):
 
         uid = self.read_secure_cookie("user_id")
         user = uid and User.by_id(int(uid))
+
         if user:
             username = user.name
-            self.render("permalink.html", username=username, post=post)
+            self.render(
+                "permalink.html", username=username, post=post, comments=comments)
         else:
-            self.render("permalink.html", post=post)
+            self.render("permalink.html", post=post, comments=comments)
 
-    def post(self, post_id):
-        subject = self.request.get("subject")
-        content = self.request.get("content")
-        print("subject and content")
 
-        uid = self.read_secure_cookie("user_id")
-        user = uid and User.by_id(int(uid))
-        key = ndb.Key("Post", int(post_id), parent=blog_key())
-        post = key.get()
-
-        if user:
-            if subject and content:
-                # p = Post(parent=blog_key(), subject=subject, content=content)
-                if int(uid) == post.submitter_id:
-                    post.subject = subject
-                    post.content = content
-                    post.put()
-                    self.redirect(
-                        "/blog/{}".format(str(post.key.integer_id())))
-                else:
-                    error = "You can only modify your post, please understand!!!"
-                    self.render("permalink.html", post=post, error=error)
-            else:
-                key = ndb.Key("Post", int(post_id), parent=blog_key())
-                post = key.get()
-                error = "subject and content please!"
-                self.render("permalink.html", post=post, error=error)
-        else:
-            error = "Please login to modify your post!!!!"
-            self.redirect("/login")
-
-class EditPost(PostPage):
+class EditPost(Handler):
 
     def get(self, post_id):
         key = ndb.Key("Post", int(post_id), parent=blog_key())
@@ -180,11 +294,30 @@ class EditPost(PostPage):
 
         uid = self.read_secure_cookie("user_id")
         user = uid and User.by_id(int(uid))
+
         if user:
             username = user.name
             self.render("edit_post.html", username=username, post=post)
         else:
             self.render("edit_post.html", post=post)
+
+    def post(self, post_id):
+        key = ndb.Key("Post", int(post_id), parent=blog_key())
+        post = key.get()
+
+        uid = self.read_secure_cookie("user_id")
+        user = uid and User.by_id(int(uid))
+
+        subject = self.request.get("subject")
+        content = self.request.get("content")
+
+        if user and (post.submitter_id == int(uid)):
+            post.subject, post.content = subject, content
+            post.put()
+            self.redirect("/blog/{}".format(str(post.key.integer_id())))
+        else:
+            self.redirect("/login")
+
 
 class NewPost(Handler):
 
@@ -219,7 +352,56 @@ class NewPost(Handler):
             error = "Please login to post new..."
             self.redirect("/login")
 
+
+class NewComment(PostPage):
+
+    def post(self, post_id):
+        """
+        This method is to handle posting comment in each post page.
+        """
+        comment_content = self.request.get("comment-content")
+
+        uid = self.read_secure_cookie("user_id")
+        user = uid and User.by_id(int(uid))
+        username = user.name
+
+        key = ndb.Key("Post", int(post_id), parent=blog_key())
+        post = key.get()
+
+        comments_belongs_to_post = Comment.query(
+            Comment.post_id_comment_belongs == int(post_id))
+
+        commenter_ids = []
+        for comment in comments_belongs_to_post:
+            commenter_ids.append(comment.commenter_id)
+
+        if user and (post.submitter_id != int(uid)):
+            if comment_content:
+                if not (int(uid) in commenter_ids):
+                    comment = Comment(post_id_comment_belongs=int(post_id),
+                                      comment_content=comment_content,
+                                      commenter_id=int(uid))
+                    comment.put()
+                    self.redirect(
+                        "/blog/{}".format(str(post.key.integer_id())))
+                else:
+                    error = "You can only comment once for each post."
+                    self.render(
+                        "permalink.html", username=username, post=post, error=error)
+            else:
+                key = ndb.Key("Post", int(post_id), parent=blog_key())
+                post = key.get()
+                error = "Please write some comment!"
+                self.render(
+                    "permalink.html", username=username, post=post, error=error)
+        else:
+            error = "You can only comment other's comment or need to login to comment."
+            self.render(
+                "permalink.html", username=username, post=post, error=error)
+
+
 class DeletePost(Handler):
+
     def post(self):
 
         uid = self.read_secure_cookie("user_id")
@@ -230,48 +412,38 @@ class DeletePost(Handler):
         post = key.get()
 
         if user:
-                if int(uid) == post.submitter_id:
-                    key.delete()
-                    self.redirect("/blog/newpost")
-                else:
-                    error = "You can only delete your post, please understand..."
-                    self.render("permalink.html", post=post, error=error)
+            if int(uid) == post.submitter_id:
+                key.delete()
+                self.redirect("/blog/newpost")
+            else:
+                error = "You can only delete your post, please understand..."
+                self.render("permalink.html", post=post, error=error)
         else:
             error = "Please login to delete your post..."
             self.redirect("/login")
 
 
-USER_RE = re.compile(r"^[a-zA-Z0-9_-]{3,20}$")
+class DeleteComment(DeletePost):
 
+    def post(self, comment_id):
 
-def valid_username(username):
-    return username and USER_RE.match(username)
+        uid = self.read_secure_cookie("user_id")
+        user = uid and User.by_id(int(uid))
 
-PASS_RE = re.compile(r"^.{3,20}$")
+        post_id = self.request.get("post_id")
+        key = ndb.Key("Post", int(post_id), parent=blog_key())
+        post = key.get()
 
-
-def valid_password(password):
-    return password and PASS_RE.match(password)
-    # if password:
-    #     return PASS_RE.match(password)
-    # else:
-    #     return password
-    # valid password --> PASS_RE.match(password)
-    # invalid password --> None
-    # no input --> None
-
-MAIL_RE = re.compile(r"^[\S]+@[\S]+.[\S]+$")
-
-
-def valid_email(email):
-    return not email or MAIL_RE.match(email)
-    # if not email:
-    #     return not email:
-    # else:
-    #     return MAIL_RE.match(email)
-    # no input --> True
-    # valid email --> MAIL_RE.match(email)
-    # invalid email --> None
+        if user:
+            if int(uid) == post.submitter_id:
+                key.delete()
+                self.redirect("/blog/")
+            else:
+                error = "You can only delete your post, please understand..."
+                self.render("permalink.html", post=post, error=error)
+        else:
+            error = "Please login to delete your post..."
+            self.redirect("/login")
 
 
 class SignUpHandler(Handler):
@@ -328,8 +500,6 @@ class Register(SignUpHandler):
             self.login(u)
             self.redirect("/blog")
 
-# login logout class
-
 
 class Login(Handler):
 
@@ -362,65 +532,14 @@ class Logout(Handler):
         self.logout()
         self.redirect("/signup")
 
-# blog users
-
-
-def make_salt(length=5):
-    return "".join(random.choice(string.letters) for x in xrange(0, length))
-
-
-def make_pw_hash(name, pw, salt=None):
-    if not salt:
-        salt = make_salt()
-    h = hashlib.sha256(name + pw + salt).hexdigest()
-    return "{}|{}".format(salt, h)
-
-
-def valid_pw(name, pw, h):
-    salt = h.split("|")[0]
-    return h == make_pw_hash(name, pw, salt)
-
-
-def users_key(group="default"):
-    return ndb.Key("users", group)
-
-
-class User(ndb.Model):
-    name = ndb.StringProperty(required=True)
-    pw_hash = ndb.StringProperty(required=True)
-    email = ndb.StringProperty()
-
-    @classmethod
-    def by_id(cls, uid):
-        return User.get_by_id(uid, parent=users_key())
-
-    @classmethod
-    def by_name(cls, name):
-        u = User.query().filter(User.name == name).get()
-        print(type(u))
-        return u
-
-    @classmethod
-    def register(cls, name, pw, email=None):
-        pw_hash = make_pw_hash(name, pw)
-        return User(parent=users_key(),
-                    name=name,
-                    pw_hash=pw_hash,
-                    email=email)
-
-    @classmethod
-    def login(cls, name, pw):
-        u = cls.by_name(name)
-        # print(u.name)
-        # print(make_pw_hash(name, pw), u.pw_hash)
-        if u and valid_pw(name, pw, u.pw_hash):
-            return u
 
 app = webapp2.WSGIApplication([
     ('/blog/?', BlogFront),
     ('/blog/([0-9]+)', PostPage),
     ('/blog/edit/([0-9]+)', EditPost),
     ('/blog/newpost', NewPost),
+    ('/blog/newcomment/([0-9]+)', NewComment),
+    ('/blog/likepost/([0-9]+)', LikeForPost),
     ('/signup', Register),
     ('/login', Login),
     ('/logout', Logout),
