@@ -192,7 +192,7 @@ class BlogFront(Handler):
             like_num_post_dict[
                 like.like_post_id] = like.number_of_liked
 
-            username = user.name if user else ""
+        username = user.name if user else ""
 
         self.render("front.html", username=username, posts=posts,
                     like_num_post_dict=like_num_post_dict)
