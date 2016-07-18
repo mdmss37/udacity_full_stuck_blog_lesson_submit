@@ -14,10 +14,14 @@
         </label>
 
         <div class="error">{{error}}</div>
-        <div class=""><p>You need to log in to edit your post</p></div>
+        <div class=""><p>You need to log in to edit your post and you only edit your post.</p></div>
 
         <input type="hidden" name="post_id" value="{{post.key.integer_id()}}">
         <button>Edit Post</button>
+    </form>
+
+    <form action={{"/blog/" ~ post.key.integer_id()}}>
+        <button>Cancel</button>
     </form>
 
 {% endblock %}

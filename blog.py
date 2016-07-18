@@ -24,6 +24,16 @@ import logging
 
 from google.appengine.ext import ndb
 
+from models import render_str
+from models import blog_key
+from models import users_key
+
+from models import User
+from models import Comment
+from models import Post
+from models import LikeForPost
+
+
 template_dir = os.path.join(os.path.dirname(__file__), "templates")
 jinja_env = jinja2.Environment(loader=jinja2.FileSystemLoader(template_dir),
                                autoescape=True)
@@ -42,17 +52,6 @@ def check_secure_val(h):
     val = h.split("|")[0]
     if h == make_secure_val(val):
         return val
-
-
-def render_str(template, **params):
-
-    t = jinja_env.get_template(template)
-    return t.render(params)
-
-
-def blog_key(name="default"):
-    return ndb.Key("blogs", name)
-
 
 USER_RE = re.compile(r"^[a-zA-Z0-9_-]{3,20}$")
 
@@ -90,11 +89,11 @@ def valid_pw(name, pw, h):
     return h == make_pw_hash(name, pw, salt)
 
 
-def users_key(group="default"):
-    return ndb.Key("users", group)
-
-
 class Handler(webapp2.RequestHandler):
+
+    """
+    This is base handler which all page handler inherits from.
+    """
 
     def write(self, *a, **kw):
         self.response.out.write(*a, **kw)
@@ -127,84 +126,11 @@ class Handler(webapp2.RequestHandler):
         self.user = uid and User.by_id(int(uid))
 
 
-class User(ndb.Model):
-
-    """
-    This is ndb model to store user.
-    """
-    name = ndb.StringProperty(required=True)
-    pw_hash = ndb.StringProperty(required=True)
-    email = ndb.StringProperty()
-
-    @classmethod
-    def by_id(cls, uid):
-        return User.get_by_id(uid, parent=users_key())
-
-    @classmethod
-    def by_name(cls, name):
-        u = User.query().filter(User.name == name).get()
-        print(type(u))
-        return u
-
-    @classmethod
-    def register(cls, name, pw, email=None):
-        pw_hash = make_pw_hash(name, pw)
-        return User(parent=users_key(),
-                    name=name,
-                    pw_hash=pw_hash,
-                    email=email)
-
-    @classmethod
-    def login(cls, name, pw):
-        u = cls.by_name(name)
-        if u and valid_pw(name, pw, u.pw_hash):
-            return u
-
-
-class Comment(ndb.Model):
-
-    """
-    This is ndb model to store comment.
-    """
-    post_id_comment_belongs = ndb.IntegerProperty(required=True)
-    comment_content = ndb.TextProperty(required=True)
-    created = ndb.DateTimeProperty(auto_now_add=True)
-    commenter_id = ndb.IntegerProperty(required=True)
-    last_modified = ndb.DateTimeProperty(auto_now=True)
-
-    def render(self):
-        self._render_text = self.comment_content.replace("\n", "<br>")
-        return render_str("comment.html", c=self)
-
-
-class Post(ndb.Model):
-
-    """
-    This is ndb model to store post.
-    """
-    subject = ndb.StringProperty(required=True)
-    content = ndb.TextProperty(required=True)
-    created = ndb.DateTimeProperty(auto_now_add=True)
-    submitter_id = ndb.IntegerProperty(required=True)
-    last_modified = ndb.DateTimeProperty(auto_now=True)
-
-    def render(self):
-        self._render_text = self.content.replace("\n", "<br>")
-        return render_str("post.html", p=self)
-
-
-class LikeForPost(ndb.Model):
-
-    """
-    This is ndb model to store like for each post.
-    """
-    number_of_post_liked = ndb.IntegerProperty(required=True)
-    post_id_like_belongs = ndb.IntegerProperty(required=True)
-    liked_user_id_list = ndb.IntegerProperty(repeated=True)
-    last_modified = ndb.DateTimeProperty(auto_now=True)
-
-
 class LikeToPost(Handler):
+
+    """
+    This is class to handle to "like" each post.
+    """
 
     def post(self, post_id):
         posts = Post.query().order(-Post.created)
@@ -216,27 +142,41 @@ class LikeToPost(Handler):
         key = ndb.Key("Post", int(post_id), parent=blog_key())
         post = key.get()
 
-        like_for_post = LikeForPost.query(post_id_like_belongs == int(uid))
+        like_for_post = LikeForPost.query(
+            LikeForPost.like_post_id == int(post_id)).get()
+        logging.warning("like for post is set.")
 
         if user:
-            if like_for_post and not(int(uid) in like_for_post.liked_user_id_list):
-                like_for_post.number_of_post_liked += 1
+            if like_for_post and (not (int(uid) in like_for_post.liked_user_id_list)) \
+                    and (post.submitter_id != int(uid)):
+
+                like_for_post.number_of_liked += 1
                 like_for_post.liked_user_id_list.append(int(uid))
                 like_for_post.put()
                 self.redirect("/blog")
 
-            elif like_for_post and (int(uid) in like_for_post.liked_user_id_list):
+            elif post.submitter_id == int(uid):
                 self.redirect("/blog")
+
+            elif like_for_post:
+                self.redirect("/blog")
+
+            # create new like for certain post if above condition not match.
             else:
-                l = LikeForPost(number_of_post_liked=1,
-                                post_id_like_belongs=int(post_id),
-                                liked_user_id_list=int(uid))
+                l = LikeForPost(number_of_liked=1,
+                                like_post_id=int(post_id),
+                                liked_user_id_list=[int(uid)])
                 l.put()
-                self.redirect("blog")
+                self.redirect("/blog")
         else:
-            self.redirect("blog")
+            self.redirect("/blog")
+
 
 class BlogFront(Handler):
+
+    """
+    This class is to render main page of blog.
+    """
 
     def get(self):
         posts = Post.query().order(-Post.created)
@@ -249,17 +189,20 @@ class BlogFront(Handler):
         like_num_post_dict = {}
 
         for like in like_for_post:
-            like_num_post_dict[like.post_id_like_belongs] = like.number_of_post_liked
+            like_num_post_dict[
+                like.like_post_id] = like.number_of_liked
 
-        if user:
-            username = user.name
-        else:
-            username = ""
+            username = user.name if user else ""
 
-        self.render("front.html", username=username, posts=posts, like_num_post_dict=like_num_post_dict)
+        self.render("front.html", username=username, posts=posts,
+                    like_num_post_dict=like_num_post_dict)
 
 
 class PostPage(Handler):
+
+    """
+    This class is to handle each post of the blog.
+    """
 
     def get(self, post_id):
         key = ndb.Key("Post", int(post_id), parent=blog_key())
@@ -283,6 +226,10 @@ class PostPage(Handler):
 
 
 class EditPost(Handler):
+
+    """
+    This class is to edit certain post.
+    """
 
     def get(self, post_id):
         key = ndb.Key("Post", int(post_id), parent=blog_key())
@@ -356,9 +303,7 @@ class NewPost(Handler):
 class NewComment(PostPage):
 
     def post(self, post_id):
-        """
-        This method is to handle posting comment in each post page.
-        """
+
         comment_content = self.request.get("comment-content")
 
         uid = self.read_secure_cookie("user_id")
@@ -534,12 +479,13 @@ class Logout(Handler):
 
 
 app = webapp2.WSGIApplication([
-    ('/blog/?', BlogFront),
+    ('/', BlogFront),
+    ('/blog', BlogFront),
     ('/blog/([0-9]+)', PostPage),
     ('/blog/edit/([0-9]+)', EditPost),
     ('/blog/newpost', NewPost),
     ('/blog/newcomment/([0-9]+)', NewComment),
-    ('/blog/likepost/([0-9]+)', LikeForPost),
+    ('/blog/likepost/([0-9]+)', LikeToPost),
     ('/signup', Register),
     ('/login', Login),
     ('/logout', Logout),
